@@ -98,6 +98,71 @@ defmodule ReqLLM.Providers.AnthropicTest do
 
       assert request.headers["authorization"] == ["Bearer #{oauth_token}"]
       refute Map.has_key?(request.headers, "x-api-key")
+      refute Map.has_key?(request.headers, "user-agent")
+      refute Map.has_key?(request.headers, "x-app")
+      refute Map.has_key?(request.headers, "anthropic-beta")
+      refute Map.has_key?(request.options, :params)
+    end
+
+    test "attach supports Claude subscription OAuth compatibility" do
+      {:ok, model} = ReqLLM.model("anthropic:claude-sonnet-4-5-20250929")
+      oauth_token = "oauth-anthropic-token-123"
+
+      request =
+        Req.new()
+        |> Anthropic.attach(model,
+          provider_options: [
+            auth_mode: :oauth,
+            access_token: oauth_token,
+            with_claude_subscription: true
+          ]
+        )
+
+      assert request.headers["authorization"] == ["Bearer #{oauth_token}"]
+      refute Map.has_key?(request.headers, "x-api-key")
+      assert request.headers["user-agent"] == ["claude-cli/2.1.112 (external, cli)"]
+      assert request.headers["x-app"] == ["claude-code"]
+
+      assert request.headers["anthropic-beta"] == [
+               "oauth-2025-04-20,interleaved-thinking-2025-05-14"
+             ]
+
+      assert request.options[:params][:beta] == "true"
+    end
+
+    test "encode_body shapes oauth requests for Claude subscription tokens" do
+      {:ok, model} = ReqLLM.model("anthropic:claude-sonnet-4-5-20250929")
+
+      context =
+        ReqLLM.Context.new([
+          ReqLLM.Context.system("You are helpful."),
+          ReqLLM.Context.user("Hello from oauth")
+        ])
+
+      request =
+        Req.new()
+        |> Req.Request.register_options([:context, :model])
+        |> Req.Request.merge_options(context: context, model: model.model)
+        |> Req.Request.put_private(:req_llm_claude_subscription?, true)
+
+      updated_request = Anthropic.encode_body(request)
+      decoded = Jason.decode!(updated_request.body)
+
+      [billing_block, identity_block, original_system_block] = decoded["system"]
+
+      assert String.starts_with?(
+               billing_block["text"],
+               "x-anthropic-billing-header: cc_version=2.1.112."
+             )
+
+      assert String.contains?(billing_block["text"], "cc_entrypoint=sdk-cli;")
+      assert String.contains?(billing_block["text"], "cch=")
+      refute Map.has_key?(billing_block, "cache_control")
+
+      assert identity_block["text"] ==
+               "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+
+      assert original_system_block["text"] == "You are helpful."
     end
 
     test "attach adds beta header for web_fetch server tool" do
@@ -134,6 +199,46 @@ defmodule ReqLLM.Providers.AnthropicTest do
 
       headers = Map.new(finch_request.headers)
       assert headers["anthropic-beta"] == "tools-2024-05-16"
+    end
+
+    test "attach_stream shapes oauth requests" do
+      {:ok, model} = ReqLLM.model("anthropic:claude-sonnet-4-5-20250929")
+
+      context =
+        ReqLLM.Context.new([
+          ReqLLM.Context.system("You are helpful."),
+          ReqLLM.Context.user("Hello from streaming oauth")
+        ])
+
+      {:ok, finch_request} =
+        Anthropic.attach_stream(
+          model,
+          context,
+          [
+            provider_options: [
+              auth_mode: :oauth,
+              access_token: "oauth-stream-token",
+              with_claude_subscription: true
+            ]
+          ],
+          nil
+        )
+
+      headers = Map.new(finch_request.headers)
+      decoded = Jason.decode!(finch_request.body)
+      query = URI.decode_query(finch_request.query)
+
+      assert headers["authorization"] == "Bearer oauth-stream-token"
+      refute Map.has_key?(headers, "x-api-key")
+      assert headers["user-agent"] == "claude-cli/2.1.112 (external, cli)"
+      assert headers["x-app"] == "claude-code"
+      assert headers["anthropic-beta"] == "oauth-2025-04-20,interleaved-thinking-2025-05-14"
+      assert query["beta"] == "true"
+
+      assert String.starts_with?(
+               List.first(decoded["system"])["text"],
+               "x-anthropic-billing-header:"
+             )
     end
 
     test "error handling for invalid configurations" do
