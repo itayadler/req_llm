@@ -185,6 +185,80 @@ defmodule ReqLLM.Providers.AnthropicTest do
       assert request.headers["anthropic-beta"] == ["advanced-tool-use-test"]
     end
 
+    test "attach combines Claude subscription and manual beta headers" do
+      {:ok, model} = ReqLLM.model("anthropic:claude-sonnet-4-5-20250929")
+
+      request =
+        Req.new()
+        |> Anthropic.attach(model,
+          anthropic_beta: ["top-level-beta"],
+          provider_options: [
+            auth_mode: :oauth,
+            access_token: "oauth-anthropic-token-123",
+            with_claude_subscription: true,
+            anthropic_beta: ["provider-beta", "interleaved-thinking-2025-05-14"]
+          ]
+        )
+
+      features = req_beta_features(request)
+
+      assert "top-level-beta" in features
+      assert "provider-beta" in features
+      assert "oauth-2025-04-20" in features
+      assert "interleaved-thinking-2025-05-14" in features
+      assert Enum.count(features, &(&1 == "interleaved-thinking-2025-05-14")) == 1
+    end
+
+    test "prepare_request applies Claude subscription OAuth shaping end to end" do
+      {:ok, model} = ReqLLM.model("anthropic:claude-sonnet-4-5-20250929")
+
+      context =
+        ReqLLM.Context.new([
+          ReqLLM.Context.system("You are helpful."),
+          ReqLLM.Context.user("Hello from prepared oauth")
+        ])
+
+      {:ok, request} =
+        Anthropic.prepare_request(:chat, model, context,
+          with_claude_subscription: true,
+          anthropic_beta: ["top-level-beta"],
+          provider_options: [
+            auth_mode: :oauth,
+            access_token: "oauth-prepared-token"
+          ],
+          max_tokens: 64
+        )
+
+      assert request.headers["authorization"] == ["Bearer oauth-prepared-token"]
+      refute Map.has_key?(request.headers, "x-api-key")
+      assert request.headers["user-agent"] == ["claude-cli/2.1.112 (external, cli)"]
+      assert request.headers["x-app"] == ["claude-code"]
+      assert request.options[:params][:beta] == "true"
+
+      features = req_beta_features(request)
+
+      assert "top-level-beta" in features
+      assert "oauth-2025-04-20" in features
+      assert "interleaved-thinking-2025-05-14" in features
+
+      decoded = request |> Anthropic.encode_body() |> Map.fetch!(:body) |> Jason.decode!()
+
+      assert decoded["model"] == "claude-sonnet-4-5-20250929"
+      assert decoded["max_tokens"] == 64
+
+      [billing_block, identity_block, original_system_block] = decoded["system"]
+
+      assert String.starts_with?(
+               billing_block["text"],
+               "x-anthropic-billing-header: cc_version=2.1.112."
+             )
+
+      assert identity_block["text"] ==
+               "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+
+      assert original_system_block["text"] == "You are helpful."
+    end
+
     test "attach_stream adds beta header for web_fetch server tool" do
       {:ok, model} = ReqLLM.model("anthropic:claude-sonnet-4-5-20250929")
       context = ReqLLM.Context.new([ReqLLM.Context.user("Fetch example.com")])
@@ -215,6 +289,7 @@ defmodule ReqLLM.Providers.AnthropicTest do
           model,
           context,
           [
+            anthropic_beta: ["stream-top-level-beta"],
             provider_options: [
               auth_mode: :oauth,
               access_token: "oauth-stream-token",
@@ -232,8 +307,13 @@ defmodule ReqLLM.Providers.AnthropicTest do
       refute Map.has_key?(headers, "x-api-key")
       assert headers["user-agent"] == "claude-cli/2.1.112 (external, cli)"
       assert headers["x-app"] == "claude-code"
-      assert headers["anthropic-beta"] == "oauth-2025-04-20,interleaved-thinking-2025-05-14"
       assert query["beta"] == "true"
+
+      features = beta_features(headers["anthropic-beta"])
+
+      assert "stream-top-level-beta" in features
+      assert "oauth-2025-04-20" in features
+      assert "interleaved-thinking-2025-05-14" in features
 
       assert String.starts_with?(
                List.first(decoded["system"])["text"],
@@ -2216,4 +2296,12 @@ defmodule ReqLLM.Providers.AnthropicTest do
       refute Map.has_key?(structured_tool.parameter_schema["properties"]["value"], "minimum")
     end
   end
+
+  defp req_beta_features(%Req.Request{} = request) do
+    request.headers["anthropic-beta"]
+    |> List.first()
+    |> beta_features()
+  end
+
+  defp beta_features(header) when is_binary(header), do: String.split(header, ",")
 end

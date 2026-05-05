@@ -689,37 +689,7 @@ defmodule ReqLLM.Providers.Anthropic do
   end
 
   defp build_beta_headers(opts, credential) do
-    provider_opts = get_option(opts, :provider_options, [])
-
-    manual_betas =
-      (List.wrap(Keyword.get(opts, :anthropic_beta)) ++
-         List.wrap(Keyword.get(provider_opts, :anthropic_beta)))
-      |> Enum.reject(&is_nil/1)
-
-    beta_features = manual_betas ++ subscription_beta_features(credential, opts)
-
-    beta_features =
-      if has_tools?(opts) do
-        [@anthropic_beta_tools | beta_features]
-      else
-        beta_features
-      end
-
-    beta_features =
-      if has_thinking?(opts) do
-        ["interleaved-thinking-2025-05-14" | beta_features]
-      else
-        beta_features
-      end
-
-    beta_features =
-      if has_prompt_caching?(opts) do
-        [@anthropic_beta_prompt_caching | beta_features]
-      else
-        beta_features
-      end
-
-    case beta_features do
+    case beta_features(opts, credential) do
       [] ->
         []
 
@@ -864,41 +834,7 @@ defmodule ReqLLM.Providers.Anthropic do
   defp claude_subscription?(_credential, _opts), do: false
 
   defp put_beta_header(request, user_opts, credential) do
-    beta_features = []
-
-    # Add betas from provider_options (e.g. structured-outputs)
-    provider_betas =
-      user_opts
-      |> Keyword.get(:provider_options, [])
-      |> Keyword.get(:anthropic_beta, [])
-      |> List.wrap()
-
-    beta_features = beta_features ++ provider_betas
-
-    beta_features = beta_features ++ subscription_beta_features(credential, user_opts)
-
-    beta_features =
-      if has_tools?(user_opts) do
-        [@anthropic_beta_tools | beta_features]
-      else
-        beta_features
-      end
-
-    beta_features =
-      if has_thinking?(user_opts) do
-        ["interleaved-thinking-2025-05-14" | beta_features]
-      else
-        beta_features
-      end
-
-    beta_features =
-      if has_prompt_caching?(user_opts) do
-        [@anthropic_beta_prompt_caching | beta_features]
-      else
-        beta_features
-      end
-
-    case beta_features do
+    case beta_features(user_opts, credential) do
       [] ->
         request
 
@@ -910,6 +846,41 @@ defmodule ReqLLM.Providers.Anthropic do
 
         Req.Request.put_header(request, "anthropic-beta", beta_header)
     end
+  end
+
+  defp beta_features(opts, credential) do
+    beta_features = manual_beta_features(opts) ++ subscription_beta_features(credential, opts)
+
+    beta_features =
+      if has_tools?(opts) do
+        [@anthropic_beta_tools | beta_features]
+      else
+        beta_features
+      end
+
+    beta_features =
+      if has_thinking?(opts) do
+        ["interleaved-thinking-2025-05-14" | beta_features]
+      else
+        beta_features
+      end
+
+    beta_features =
+      if has_prompt_caching?(opts) do
+        [@anthropic_beta_prompt_caching | beta_features]
+      else
+        beta_features
+      end
+
+    Enum.uniq(beta_features)
+  end
+
+  defp manual_beta_features(opts) do
+    provider_opts = get_option(opts, :provider_options, [])
+
+    [get_option(opts, :anthropic_beta), get_option(provider_opts, :anthropic_beta)]
+    |> Enum.flat_map(&List.wrap/1)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp has_tools?(user_opts) do
