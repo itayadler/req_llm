@@ -21,6 +21,7 @@ defmodule ReqLLM.Providers.OpenRouter do
   - `openrouter_structured_output_mode` - Enables `:json_schema` structured output (when tool calls are not supported)
   - `openrouter_usage` - Usage options (e.g., `%{include: true}`)
   - `openrouter_plugins` - Array of plugins (e.g., `[%{id: "web"}]`)
+  - `openrouter_session_id` - Session ID for grouping related requests in OpenRouter
   - `app_referer` - HTTP-Referer header for app identification
   - `app_title` - X-Title header for app title in rankings
 
@@ -110,6 +111,10 @@ defmodule ReqLLM.Providers.OpenRouter do
       type: {:list, :map},
       doc: "OpenRouter plugins. Example: [%{id: \"web\"}]"
     ],
+    openrouter_session_id: [
+      type: :string,
+      doc: "OpenRouter session ID for grouping related LLM calls"
+    ],
     dimensions: [
       type: :pos_integer,
       doc: "Number of dimensions for embedding models"
@@ -183,11 +188,14 @@ defmodule ReqLLM.Providers.OpenRouter do
       end
 
     opts =
-      case Keyword.get(opts, :max_tokens) do
-        nil -> Keyword.put(opts, :max_tokens, 4096)
-        tokens when tokens < 200 -> Keyword.put(opts, :max_tokens, 200)
-        _tokens -> opts
-      end
+      opts
+      |> ReqLLM.Provider.Options.put_model_max_tokens_default(model_spec, fallback: 4096)
+      |> then(fn opts ->
+        case Keyword.get(opts, :max_tokens) do
+          tokens when is_integer(tokens) and tokens < 200 -> Keyword.put(opts, :max_tokens, 200)
+          _tokens -> opts
+        end
+      end)
 
     opts = Keyword.put(opts, :operation, :object)
 
@@ -309,6 +317,7 @@ defmodule ReqLLM.Providers.OpenRouter do
     |> maybe_put(:reasoning_effort, request.options[:reasoning_effort])
     |> maybe_put(:usage, request.options[:openrouter_usage])
     |> maybe_put(:plugins, request.options[:openrouter_plugins])
+    |> maybe_put(:session_id, request.options[:openrouter_session_id])
     |> add_openrouter_specific_options(request.options)
     |> add_stream_options(request.options)
   end

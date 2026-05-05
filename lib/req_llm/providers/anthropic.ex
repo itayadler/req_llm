@@ -276,7 +276,7 @@ defmodule ReqLLM.Providers.Anthropic do
           })
         end
       )
-      |> Keyword.put_new(:max_tokens, 4096)
+      |> ReqLLM.Provider.Options.put_model_max_tokens_default(model_spec, fallback: 4096)
       |> Keyword.put(:operation, :object)
 
     prepare_request(:chat, model_spec, prompt, opts_with_format)
@@ -325,7 +325,7 @@ defmodule ReqLLM.Providers.Anthropic do
           opts
           |> Keyword.update(:tools, [structured_output_tool], &[structured_output_tool | &1])
           |> Keyword.put(:tool_choice, %{type: "tool", name: "structured_output"})
-          |> Keyword.put_new(:max_tokens, 4096)
+          |> ReqLLM.Provider.Options.put_model_max_tokens_default(model_spec, fallback: 4096)
           |> Keyword.put(:operation, :object)
 
         prepare_request(:chat, model_spec, prompt, opts_with_tool)
@@ -542,8 +542,6 @@ defmodule ReqLLM.Providers.Anthropic do
     end
   end
 
-  defp shape_subscription_body(body, _request_or_credential), do: body
-
   defp do_shape_subscription_body(body) do
     system = map_value(body, :system)
     messages = map_value(body, :messages) || []
@@ -606,9 +604,11 @@ defmodule ReqLLM.Providers.Anthropic do
         cch = sha256_prefix(text, 5)
 
         sampled =
-          @claude_subscription_billing_positions
-          |> Enum.map(&(String.at(text, &1) || "0"))
-          |> Enum.join("")
+          Enum.map_join(
+            @claude_subscription_billing_positions,
+            "",
+            &(String.at(text, &1) || "0")
+          )
 
         suffix =
           sha256_prefix(
@@ -688,8 +688,6 @@ defmodule ReqLLM.Providers.Anthropic do
     end
   end
 
-  defp add_subscription_beta_query(url, _credential), do: url
-
   defp build_beta_headers(opts, credential) do
     provider_opts = get_option(opts, :provider_options, [])
 
@@ -747,14 +745,17 @@ defmodule ReqLLM.Providers.Anthropic do
 
   @impl ReqLLM.Provider
   def attach_stream(model, context, opts, _finch_name) do
-    # Extract and merge provider_options for translation
-    {provider_options, standard_opts} = Keyword.pop(opts, :provider_options, [])
-    flattened_opts = Keyword.merge(standard_opts, provider_options)
+    operation = opts[:operation] || :chat
 
-    # Translate provider options (including reasoning_effort) before building body
-    {translated_opts, _warnings} = translate_options(:chat, model, flattened_opts)
+    translated_opts =
+      ReqLLM.Provider.Options.process_stream!(
+        __MODULE__,
+        operation,
+        model,
+        context,
+        opts
+      )
 
-    # Set default timeout for reasoning models
     default_timeout =
       if Keyword.has_key?(translated_opts, :thinking) do
         Application.get_env(:req_llm, :thinking_timeout, 300_000)
@@ -771,10 +772,11 @@ defmodule ReqLLM.Providers.Anthropic do
     headers = build_request_headers(translated_opts, credential)
     streaming_headers = [{"Accept", "text/event-stream"} | headers]
     beta_headers = build_beta_headers(translated_opts, credential)
-    custom_headers = ReqLLM.Provider.Utils.extract_custom_headers(opts[:req_http_options])
-    all_headers = streaming_headers ++ beta_headers ++ custom_headers
 
-    operation = opts[:operation] || :chat
+    custom_headers =
+      ReqLLM.Provider.Utils.extract_custom_headers(translated_opts[:req_http_options])
+
+    all_headers = streaming_headers ++ beta_headers ++ custom_headers
 
     context =
       ReqLLM.ToolCallIdCompat.apply_context(

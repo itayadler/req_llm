@@ -146,6 +146,10 @@ defmodule ReqLLM.Providers.OpenAI do
       type: :integer,
       doc: "Maximum completion tokens (required for reasoning models like o1, o3, gpt-5)"
     ],
+    max_output_tokens: [
+      type: :integer,
+      doc: "Maximum output tokens for Responses API models"
+    ],
     openai_structured_output_mode: [
       type: {:in, [:auto, :json_schema, :tool_strict]},
       default: :auto,
@@ -191,6 +195,18 @@ defmodule ReqLLM.Providers.OpenAI do
       default: :sse,
       doc:
         "Streaming transport for Responses models. Use :websocket for OpenAI WebSocket mode; SSE remains the default."
+    ],
+    openai_reuse_websocket: [
+      type: :boolean,
+      default: false,
+      doc:
+        "Request that higher-level agent runtimes reuse one Responses API WebSocket across multiple response.create turns."
+    ],
+    openai_websocket_session: [
+      type: :any,
+      doc:
+        "Existing ReqLLM.Streaming.WebSocketSession pid to reuse for Responses API streams. " <>
+          "When set, ReqLLM sends the response.create event on that socket and leaves socket ownership to the caller."
     ],
     openai_compatible_backend: [
       type: {:or, [{:in, [:ollama]}, {:in, ["ollama"]}]},
@@ -574,7 +590,7 @@ defmodule ReqLLM.Providers.OpenAI do
           |> Keyword.put(:openai_parallel_tool_calls, false)
         end
       )
-      |> put_default_max_tokens_for_model(model_spec)
+      |> ReqLLM.Provider.Options.put_model_max_tokens_default(model_spec, fallback: 4096)
       |> Keyword.put(:operation, :object)
 
     prepare_request(:chat, model_spec, prompt, opts_with_format)
@@ -603,7 +619,7 @@ defmodule ReqLLM.Providers.OpenAI do
         [],
         &Keyword.put(&1, :openai_parallel_tool_calls, false)
       )
-      |> put_default_max_tokens_for_model(model_spec)
+      |> ReqLLM.Provider.Options.put_model_max_tokens_default(model_spec, fallback: 4096)
       |> Keyword.put(:operation, :object)
 
     prepare_request(:chat, model_spec, prompt, opts_with_tool)
@@ -698,7 +714,18 @@ defmodule ReqLLM.Providers.OpenAI do
   @impl ReqLLM.Provider
   def attach_stream(model, context, opts, finch_name) do
     api_mod = select_api_mod(model)
-    api_mod.attach_stream(model, context, opts, finch_name)
+    operation = opts[:operation] || :chat
+
+    processed_opts =
+      ReqLLM.Provider.Options.process_stream!(
+        __MODULE__,
+        operation,
+        model,
+        context,
+        opts
+      )
+
+    api_mod.attach_stream(model, context, processed_opts, finch_name)
   end
 
   def attach_websocket_stream(model, context, opts) do
@@ -713,6 +740,10 @@ defmodule ReqLLM.Providers.OpenAI do
            "OpenAI WebSocket mode is only supported for Responses models. #{LLMDB.Model.spec(model)} routes to #{inspect(api_mod)}."
        )}
     end
+  end
+
+  def start_responses_session(%LLMDB.Model{} = model, opts \\ []) do
+    ReqLLM.Providers.OpenAI.WebSocket.start_responses_session(model, opts)
   end
 
   def stream_transport(_model, opts) do
@@ -798,22 +829,6 @@ defmodule ReqLLM.Providers.OpenAI do
     else
       chunks = ReqLLM.Providers.OpenAI.ChatAPI.decode_stream_event(event, model)
       {chunks, state}
-    end
-  end
-
-  defp put_default_max_tokens_for_model(opts, model_spec) do
-    case ReqLLM.model(model_spec) do
-      {:ok, model} ->
-        case get_api_type(model) do
-          "responses" ->
-            Keyword.put_new(opts, :max_completion_tokens, 4096)
-
-          _ ->
-            Keyword.put_new(opts, :max_tokens, 4096)
-        end
-
-      _ ->
-        Keyword.put_new(opts, :max_tokens, 4096)
     end
   end
 

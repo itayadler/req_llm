@@ -178,11 +178,20 @@ defmodule ReqLLM.Provider.Defaults do
       """
       @impl ReqLLM.Provider
       def attach_stream(model, context, opts, finch_name) do
+        processed_opts =
+          ReqLLM.Provider.Options.process_stream!(
+            __MODULE__,
+            opts[:operation] || :chat,
+            model,
+            context,
+            opts
+          )
+
         ReqLLM.Provider.Defaults.default_attach_stream(
           __MODULE__,
           model,
           context,
-          opts,
+          processed_opts,
           finch_name
         )
       end
@@ -299,7 +308,7 @@ defmodule ReqLLM.Provider.Defaults do
       opts
       |> Keyword.update(:tools, [structured_output_tool], &[structured_output_tool | &1])
       |> Keyword.put(:tool_choice, tool_choice)
-      |> Keyword.put_new(:max_tokens, 4096)
+      |> ReqLLM.Provider.Options.put_model_max_tokens_default(model_spec, fallback: 4096)
       |> Keyword.put(:operation, :object)
 
     prepare_chat_request(provider_mod, model_spec, prompt, opts_with_tool)
@@ -1100,6 +1109,15 @@ defmodule ReqLLM.Provider.Defaults do
   Provider.Defaults for the protocol removal refactoring.
   """
   @spec default_decode_stream_event(map(), LLMDB.Model.t()) :: [ReqLLM.StreamChunk.t()]
+  def default_decode_stream_event(%{data: %{"error" => %{"message" => msg}}}, _model)
+      when is_binary(msg) do
+    [ReqLLM.StreamChunk.meta(%{finish_reason: :error, error: msg, terminal?: true})]
+  end
+
+  def default_decode_stream_event(%{data: %{"error" => msg}}, _model) when is_binary(msg) do
+    [ReqLLM.StreamChunk.meta(%{finish_reason: :error, error: msg, terminal?: true})]
+  end
+
   def default_decode_stream_event(%{data: data}, model) when is_map(data) do
     # 1. Handle choices (content + finish_reason + reasoning_details)
     choices_chunks =

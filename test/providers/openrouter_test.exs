@@ -369,7 +369,9 @@ defmodule ReqLLM.Providers.OpenRouterTest do
          fn json -> assert json["repetition_penalty"] == 1.1 end},
         {[openrouter_min_p: 0.05], fn json -> assert json["min_p"] == 0.05 end},
         {[openrouter_top_a: 0.2], fn json -> assert json["top_a"] == 0.2 end},
-        {[openrouter_top_logprobs: 5], fn json -> assert json["top_logprobs"] == 5 end}
+        {[openrouter_top_logprobs: 5], fn json -> assert json["top_logprobs"] == 5 end},
+        {[openrouter_session_id: "req-llm-test-session"],
+         fn json -> assert json["session_id"] == "req-llm-test-session" end}
       ]
 
       for {opts, assertion} <- test_cases do
@@ -473,7 +475,7 @@ defmodule ReqLLM.Providers.OpenRouterTest do
 
       refute Map.has_key?(request.options, :tools)
       refute Map.has_key?(request.options, :tool_choice)
-      assert request.options[:max_tokens] == 4096
+      assert request.options[:max_tokens] == model.limits.output
     end
 
     test "prepare_request for :object with json_schema mode respects custom max_tokens" do
@@ -525,7 +527,7 @@ defmodule ReqLLM.Providers.OpenRouterTest do
              }
 
       refute Map.has_key?(request.options, :response_format)
-      assert request.options[:max_tokens] == 4096
+      assert request.options[:max_tokens] == model.limits.output
     end
 
     test "decode_response handles streaming responses" do
@@ -747,8 +749,7 @@ defmodule ReqLLM.Providers.OpenRouterTest do
       opts = [compiled_schema: schema]
       {:ok, request} = OpenRouter.prepare_request(:object, model, context, opts)
 
-      # Should get default of 4096
-      assert request.options[:max_tokens] == 4096
+      assert request.options[:max_tokens] == model.limits.output
     end
 
     test "prepare_request for :object with sufficient max_tokens unchanged" do
